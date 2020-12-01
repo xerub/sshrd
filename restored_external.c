@@ -32,19 +32,38 @@
 
 IOUSBDeviceDescriptionRef IOUSBDeviceDescriptionCreateWithType(CFAllocatorRef, CFStringRef);
 
+io_service_t
+get_service(const char *name, unsigned int retry)
+{
+    io_service_t service;
+    CFDictionaryRef match = IOServiceMatching(name);
+
+    while (1) {
+        CFRetain(match);
+        service = IOServiceGetMatchingService(kIOMasterPortDefault, match);
+        if (service || !retry--) {
+            break;
+        }
+        printf("Didn't find %s, trying again\n", name);
+        sleep(1);
+    }
+
+    CFRelease(match);
+    return service;
+}
+
 /* reversed from restored_external */
 int
-init_mux(void)
+init_usb(void)
 {
     int i;
     CFNumberRef n;
+    io_service_t service;
     CFMutableDictionaryRef dict;
-    CFMutableDictionaryRef match;
     IOUSBDeviceDescriptionRef desc;
     IOUSBDeviceControllerRef controller;
-    io_service_t service;
 
-    desc = IOUSBDeviceDescriptionCreateWithType(kCFAllocatorDefault, CFSTR("standardMuxOnly"));
+    desc = IOUSBDeviceDescriptionCreateWithType(kCFAllocatorDefault, CFSTR("standardMuxOnly")); /* standardRestore */
     if (!desc) {
         return -1;
     }
@@ -60,37 +79,27 @@ init_mux(void)
     CFRelease(desc);
     CFRelease(controller);
 
-    dict = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    service = get_service("AppleUSBDeviceMux", 10);
+    if (!service) {
+        return -1;
+    }
+
+    dict = CFDictionaryCreateMutable(NULL, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
     i = 7;
     n = CFNumberCreate(NULL, kCFNumberIntType, &i);
     CFDictionarySetValue(dict, CFSTR("DebugLevel"), n);
     CFRelease(n);
 
-    match = IOServiceMatching("AppleUSBDeviceMux");
-    for (i = 0; i < 3; i++) {
-        CFRetain(match);
-        service = IOServiceGetMatchingService(kIOMasterPortDefault, match);
-        if (!service) {
-            printf("Didn't find, trying again\n");
-            sleep(1);
-        } else {
-            break;
-        }
-    }
-    if (!service) {
-        return -1;
-    }
-
     i = IORegistryEntrySetCFProperties(service, dict);
-    IOObjectRelease(service);
     CFRelease(dict);
+    IOObjectRelease(service);
 
     return i;
 }
 
 #include "micro_inetd.c" /* I know, I am a bad person for doing this */
-char *execve_params[] = { "/sbin/sshd", "2222", "/sbin/sshd", "-i", NULL };
+char *execve_params[] = { "micro_inetd", "22", "/usr/local/sbin/dropbear", "-i", NULL };
 
 /* chopped from https://code.google.com/p/iphone-dataprotection/ */
 int
@@ -99,39 +108,19 @@ main(int argc, char *argv[])
     printf("Starting ramdisk tool\n");
     printf("Compiled " __DATE__ " " __TIME__ "\n");
 
-    CFMutableDictionaryRef matching;
-    io_service_t service = 0;
-    matching = IOServiceMatching("IOWatchDogTimer");
-    if (matching == NULL) {
-        printf("unable to create matching dictionary for class IOWatchDogTimer\n");
+    io_service_t service = get_service("IOWatchDogTimer", 0);
+    if (service) {
+        int zero = 0;
+        CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt32Type, &zero);
+        IORegistryEntrySetCFProperties(service, n);
+        CFRelease(n);
+        IOObjectRelease(service);
     }
 
-    service = IOServiceGetMatchingService(kIOMasterPortDefault, matching);
-    if (service == 0) {
-        printf("unable to create matching dictionary for class IOWatchDogTimer\n");
-    }
-    uint32_t zero = 0;
-    CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &zero);
-    IORegistryEntrySetCFProperties(service, n);
-    IOObjectRelease(service);
-
-    if (init_mux()) {
+    if (init_usb()) {
         printf("USB init FAIL\n");
     } else {
         printf("USB init done\n");
-    }
-
-    int i;
-    struct stat st;
-    for (i = 0; i < 10; i++) {
-        printf("Waiting for data partition\n");
-        if(!stat("/dev/disk0s2s1", &st)) {
-            break;
-        }
-        if(!stat("/dev/disk0s1s2", &st)) {
-            break;
-        }
-        sleep(5);
     }
 
     printf(" #######  ##    ##\n");

@@ -1,0 +1,6 @@
+Replacement for the main daemon of the Restore/Update iOS ramdisk:
+restored_external/ramrod. Do not forget to sign with the original
+entitlements and then throw in platform-application=true for good
+measure :)
+
+-xerub
